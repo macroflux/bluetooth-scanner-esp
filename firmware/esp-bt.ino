@@ -15,23 +15,19 @@
 const char *WIFI_SSID     = "YOUR_WIFI_NETWORK_NAME";
 const char *WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
 
-// Change this when the receiving PC/API is ready.
-// Your network is 192.168.68.x, so the receiver will likely
-// also have a 192.168.68.x address.
 const char *API_URL =
   "http://192.168.68.XXX:8000/api/bluetooth/scan";
 
 const char *SCANNER_ID = "solar-bt-01";
 
-// Time FROM END OF ONE SCAN to beginning of the next.
+// Wait this long AFTER one complete scan finishes
+// before starting the next scan.
 constexpr uint32_t SCAN_INTERVAL_MS = 60000;
 
 // BLE scan duration.
 constexpr uint32_t BLE_SCAN_SECONDS = 12;
 
 // Wi-Fi connection timeout.
-// Important later for battery operation: don't burn power
-// indefinitely trying to reach a weak/missing AP.
 constexpr uint32_t WIFI_TIMEOUT_MS = 10000;
 
 
@@ -52,10 +48,6 @@ HardwareSerial HC05(1);
 // ============================================================
 
 constexpr int MAX_CLASSIC_DEVICES = 12;
-
-// This isn't a hard BLE radio limit.
-// It simply prevents an unexpectedly dense BLE environment
-// from consuming silly amounts of RAM in one HTTP payload.
 constexpr int MAX_BLE_DEVICES = 40;
 
 
@@ -63,12 +55,17 @@ constexpr int MAX_BLE_DEVICES = 40;
 // CLASSIC STORAGE
 // ============================================================
 
-struct ClassicDevice {
+struct ClassicDevice
+{
   String addressRaw;
   String addressCommand;
+
   String classRaw;
   String rssiRaw;
+
   String name;
+  bool nameLookupAttempted;
+  bool nameLookupSucceeded;
 };
 
 ClassicDevice classicDevices[MAX_CLASSIC_DEVICES];
@@ -91,8 +88,9 @@ int bleCount = 0;
 
 uint32_t scanId = 0;
 
-unsigned long scanStartedAt = 0;
-unsigned long scanFinishedAt = 0;
+uint32_t scanStartedAt = 0;
+uint32_t scanFinishedAt = 0;
+uint32_t previousCycleFinished = 0;
 
 bool bleInitialized = false;
 
@@ -104,15 +102,14 @@ bool bleInitialized = false;
 String jsonEscape(const String &input)
 {
   String output;
-
   output.reserve(input.length() + 8);
 
-  for (size_t i = 0; i < input.length(); i++) {
-
+  for (size_t i = 0; i < input.length(); i++)
+  {
     char c = input[i];
 
-    switch (c) {
-
+    switch (c)
+    {
       case '\\':
         output += "\\\\";
         break;
@@ -135,8 +132,8 @@ String jsonEscape(const String &input)
 
       default:
 
-        if ((uint8_t)c < 0x20) {
-
+        if ((uint8_t)c < 0x20)
+        {
           char buffer[7];
 
           snprintf(
@@ -147,9 +144,9 @@ String jsonEscape(const String &input)
           );
 
           output += buffer;
-
-        } else {
-
+        }
+        else
+        {
           output += c;
         }
 
@@ -170,11 +167,10 @@ String bytesToHex(
     "0123456789ABCDEF";
 
   String output;
-
   output.reserve(length * 2);
 
-  for (size_t i = 0; i < length; i++) {
-
+  for (size_t i = 0; i < length; i++)
+  {
     output += hexChars[
       (data[i] >> 4) & 0x0F
     ];
@@ -213,44 +209,49 @@ void listWiFiNetworks()
   );
 
   WiFi.mode(WIFI_STA);
-
   WiFi.disconnect(true);
 
   delay(250);
 
   int count = WiFi.scanNetworks();
 
-  if (count <= 0) {
-
+  if (count <= 0)
+  {
     Serial.println(
       "# No Wi-Fi networks detected."
     );
-
-  } else {
-
-    for (int i = 0; i < count; i++) {
-
+  }
+  else
+  {
+    for (int i = 0; i < count; i++)
+    {
       Serial.print("# ");
       Serial.print(i + 1);
       Serial.print(": \"");
 
-      Serial.print(WiFi.SSID(i));
+      Serial.print(
+        WiFi.SSID(i)
+      );
 
       Serial.print("\" RSSI=");
-      Serial.print(WiFi.RSSI(i));
+      Serial.print(
+        WiFi.RSSI(i)
+      );
 
       Serial.print(" CH=");
-      Serial.print(WiFi.channel(i));
+      Serial.print(
+        WiFi.channel(i)
+      );
 
       if (
         WiFi.encryptionType(i) ==
         WIFI_AUTH_OPEN
-      ) {
-
+      )
+      {
         Serial.println(" OPEN");
-
-      } else {
-
+      }
+      else
+      {
         Serial.println(" SECURED");
       }
     }
@@ -271,38 +272,62 @@ void listWiFiNetworks()
 bool connectWiFi()
 {
   Serial.println();
-  Serial.print("# Connecting Wi-Fi: ");
-  Serial.println(WIFI_SSID);
 
-  WiFi.mode(WIFI_STA);
+  Serial.print(
+    "# Connecting Wi-Fi: "
+  );
+
+  Serial.println(
+    WIFI_SSID
+  );
+
+  WiFi.mode(
+    WIFI_STA
+  );
 
   WiFi.begin(
     WIFI_SSID,
     WIFI_PASSWORD
   );
 
-  uint32_t started = millis();
+  uint32_t started =
+    millis();
 
   while (
     WiFi.status() != WL_CONNECTED &&
     millis() - started < WIFI_TIMEOUT_MS
-  ) {
-
+  )
+  {
     Serial.print(".");
     delay(500);
   }
 
   Serial.println();
 
-  if (WiFi.status() == WL_CONNECTED) {
+  if (
+    WiFi.status() ==
+    WL_CONNECTED
+  )
+  {
+    Serial.println(
+      "# Wi-Fi connected"
+    );
 
-    Serial.println("# Wi-Fi connected");
+    Serial.print(
+      "# IP: "
+    );
 
-    Serial.print("# IP: ");
-    Serial.println(WiFi.localIP());
+    Serial.println(
+      WiFi.localIP()
+    );
 
-    Serial.print("# RSSI: ");
-    Serial.println(WiFi.RSSI());
+    Serial.print(
+      "# RSSI: "
+    );
+
+    Serial.println(
+      WiFi.RSSI()
+    );
 
     return true;
   }
@@ -324,7 +349,8 @@ bool connectWiFi()
 
 void clearHC05()
 {
-  while (HC05.available()) {
+  while (HC05.available())
+  {
     HC05.read();
   }
 }
@@ -336,14 +362,16 @@ String readHC05(
 {
   String response;
 
-  uint32_t started = millis();
+  uint32_t started =
+    millis();
 
   while (
-    millis() - started < timeoutMs
-  ) {
-
-    while (HC05.available()) {
-
+    millis() - started <
+    timeoutMs
+  )
+  {
+    while (HC05.available())
+    {
       response +=
         (char)HC05.read();
     }
@@ -365,7 +393,9 @@ String sendAT(
   HC05.print(command);
   HC05.print("\r\n");
 
-  return readHC05(timeoutMs);
+  return readHC05(
+    timeoutMs
+  );
 }
 
 
@@ -379,15 +409,18 @@ void parseClassicInquiryLine(
 {
   line.trim();
 
-  if (!line.startsWith("+INQ:")) {
+  if (
+    !line.startsWith("+INQ:")
+  )
+  {
     return;
   }
 
   if (
     classicCount >=
     MAX_CLASSIC_DEVICES
-  ) {
-
+  )
+  {
     return;
   }
 
@@ -405,8 +438,8 @@ void parseClassicInquiryLine(
   if (
     comma1 < 0 ||
     comma2 < 0
-  ) {
-
+  )
+  {
     return;
   }
 
@@ -437,20 +470,18 @@ void parseClassicInquiryLine(
   device.addressCommand =
     device.addressRaw;
 
-  // Your HC-05 firmware expects:
-  //
-  // 23:9:1098E
-  //
-  // to become:
-  //
-  // 23,9,1098E
-
   device.addressCommand.replace(
     ":",
     ","
   );
 
   device.name = "";
+
+  device.nameLookupAttempted =
+    false;
+
+  device.nameLookupSucceeded =
+    false;
 
   classicCount++;
 }
@@ -481,10 +512,8 @@ String lookupClassicName(
   int position =
     response.indexOf("+RNAME:");
 
-  if (position < 0) {
-
-    // Expected behavior for devices that do not
-    // return a remote name.
+  if (position < 0)
+  {
     return "";
   }
 
@@ -496,8 +525,8 @@ String lookupClassicName(
       position
     );
 
-  if (end < 0) {
-
+  if (end < 0)
+  {
     end =
       response.indexOf(
         '\n',
@@ -505,8 +534,10 @@ String lookupClassicName(
       );
   }
 
-  if (end < 0) {
-    end = response.length();
+  if (end < 0)
+  {
+    end =
+      response.length();
   }
 
   String name =
@@ -530,6 +561,7 @@ void scanClassic()
   classicCount = 0;
 
   Serial.println();
+
   Serial.println(
     "# ========================================"
   );
@@ -546,14 +578,18 @@ void scanClassic()
   String response =
     sendAT("AT");
 
-  Serial.print("# AT: ");
-  Serial.println(response);
+  Serial.print(
+    "# AT: "
+  );
+
+  Serial.println(
+    response
+  );
 
 
   sendAT(
     "AT+ROLE=1"
   );
-
 
   sendAT(
     "AT+INQM=0,9,9"
@@ -566,13 +602,12 @@ void scanClassic()
       1500
     );
 
-  // ERROR:(17) means SPP is already initialized.
-  // We intentionally tolerate it.
-
   if (
-    response.indexOf("ERROR:(17)") >= 0
-  ) {
-
+    response.indexOf(
+      "ERROR:(17)"
+    ) >= 0
+  )
+  {
     Serial.println(
       "# HC-05 already initialized."
     );
@@ -596,34 +631,34 @@ void scanClassic()
   constexpr uint32_t
     inquiryTimeout = 14000;
 
-
   String line;
 
 
   while (
     millis() - started <
     inquiryTimeout
-  ) {
-
-    while (HC05.available()) {
-
+  )
+  {
+    while (HC05.available())
+    {
       char c =
         HC05.read();
 
-
-      if (c == '\n') {
-
+      if (c == '\n')
+      {
         line.trim();
 
         if (
           line.startsWith("+INQ:")
-        ) {
-
+        )
+        {
           Serial.print(
             "# CLASSIC RAW: "
           );
 
-          Serial.println(line);
+          Serial.println(
+            line
+          );
 
           parseClassicInquiryLine(
             line
@@ -631,9 +666,9 @@ void scanClassic()
         }
 
         line = "";
-
-      } else if (c != '\r') {
-
+      }
+      else if (c != '\r')
+      {
         line += c;
       }
     }
@@ -651,20 +686,422 @@ void scanClassic()
   );
 
 
-  // Opportunistically obtain names.
-  // Failure is normal and becomes null later.
+  // Opportunistic remote-name lookup.
 
   for (
     int i = 0;
     i < classicCount;
     i++
-  ) {
+  )
+  {
+    ClassicDevice &device =
+      classicDevices[i];
 
-    classicDevices[i].name =
+    device.nameLookupAttempted =
+      true;
+
+    device.name =
       lookupClassicName(
-        classicDevices[i]
+        device
       );
+
+    device.nameLookupSucceeded =
+      device.name.length() > 0;
+
+    Serial.print(
+      "# RNAME "
+    );
+
+    Serial.print(
+      device.addressRaw
+    );
+
+    Serial.print(": ");
+
+    if (
+      device.nameLookupSucceeded
+    )
+    {
+      Serial.println(
+        device.name
+      );
+    }
+    else
+    {
+      Serial.println(
+        "[no response]"
+      );
+    }
   }
+}
+
+
+// ============================================================
+// CLASSIC CLASS-OF-DEVICE DECODING
+// ============================================================
+
+uint8_t classicFormatType(
+  uint32_t cod
+)
+{
+  return cod & 0x03;
+}
+
+
+uint8_t classicMajorCode(
+  uint32_t cod
+)
+{
+  return (
+    cod >> 8
+  ) & 0x1F;
+}
+
+
+uint8_t classicMinorCode(
+  uint32_t cod
+)
+{
+  return (
+    cod >> 2
+  ) & 0x3F;
+}
+
+
+uint16_t classicServiceBits(
+  uint32_t cod
+)
+{
+  return (
+    cod >> 13
+  ) & 0x07FF;
+}
+
+
+String classicMajorName(
+  uint8_t major
+)
+{
+  switch (major)
+  {
+    case 0x00:
+      return "miscellaneous";
+
+    case 0x01:
+      return "computer";
+
+    case 0x02:
+      return "phone";
+
+    case 0x03:
+      return "lan_network";
+
+    case 0x04:
+      return "audio_video";
+
+    case 0x05:
+      return "peripheral";
+
+    case 0x06:
+      return "imaging";
+
+    case 0x07:
+      return "wearable";
+
+    case 0x08:
+      return "toy";
+
+    case 0x09:
+      return "health";
+
+    case 0x1F:
+      return "uncategorized";
+
+    default:
+      return "reserved";
+  }
+}
+
+
+String classicMinorName(
+  uint8_t major,
+  uint8_t minor
+)
+{
+  switch (major)
+  {
+    // COMPUTER
+    case 0x01:
+
+      switch (minor & 0x3F)
+      {
+        case 0x00:
+          return "uncategorized";
+
+        case 0x01:
+          return "desktop";
+
+        case 0x02:
+          return "server";
+
+        case 0x03:
+          return "laptop";
+
+        case 0x04:
+          return "handheld";
+
+        case 0x05:
+          return "palm";
+
+        case 0x06:
+          return "wearable_computer";
+
+        case 0x07:
+          return "tablet";
+
+        default:
+          return "other";
+      }
+
+
+    // PHONE
+    case 0x02:
+
+      switch (minor & 0x3F)
+      {
+        case 0x00:
+          return "uncategorized";
+
+        case 0x01:
+          return "cellular";
+
+        case 0x02:
+          return "cordless";
+
+        case 0x03:
+          return "smartphone";
+
+        case 0x04:
+          return "wired_modem_or_voice_gateway";
+
+        case 0x05:
+          return "common_isdn_access";
+
+        default:
+          return "other";
+      }
+
+
+    // AUDIO / VIDEO
+    case 0x04:
+
+      switch (minor & 0x3F)
+      {
+        case 0x00:
+          return "uncategorized";
+
+        case 0x01:
+          return "headset";
+
+        case 0x02:
+          return "handsfree";
+
+        case 0x04:
+          return "microphone";
+
+        case 0x05:
+          return "loudspeaker";
+
+        case 0x06:
+          return "headphones";
+
+        case 0x07:
+          return "portable_audio";
+
+        case 0x08:
+          return "car_audio";
+
+        case 0x09:
+          return "set_top_box";
+
+        case 0x0A:
+          return "hifi_audio";
+
+        case 0x0B:
+          return "vcr";
+
+        case 0x0C:
+          return "video_camera";
+
+        case 0x0D:
+          return "camcorder";
+
+        case 0x0E:
+          return "video_monitor";
+
+        case 0x0F:
+          return "video_display_and_loudspeaker";
+
+        case 0x10:
+          return "video_conferencing";
+
+        case 0x12:
+          return "gaming_toy";
+
+        default:
+          return "other";
+      }
+
+
+    // WEARABLE
+    case 0x07:
+
+      switch (minor & 0x3F)
+      {
+        case 0x01:
+          return "wristwatch";
+
+        case 0x02:
+          return "pager";
+
+        case 0x03:
+          return "jacket";
+
+        case 0x04:
+          return "helmet";
+
+        case 0x05:
+          return "glasses";
+
+        default:
+          return "other";
+      }
+
+
+    default:
+      return "unspecified";
+  }
+}
+
+
+String classicServiceJSON(
+  uint16_t serviceBits
+)
+{
+  String json = "[";
+
+  bool first = true;
+
+  auto addService =
+    [&](const char *name)
+  {
+    if (!first)
+    {
+      json += ",";
+    }
+
+    json += "\"";
+    json += name;
+    json += "\"";
+
+    first = false;
+  };
+
+
+  if (
+    serviceBits &
+    (1 << 0)
+  )
+  {
+    addService(
+      "limited_discoverable"
+    );
+  }
+
+  if (
+    serviceBits &
+    (1 << 3)
+  )
+  {
+    addService(
+      "positioning"
+    );
+  }
+
+  if (
+    serviceBits &
+    (1 << 4)
+  )
+  {
+    addService(
+      "networking"
+    );
+  }
+
+  if (
+    serviceBits &
+    (1 << 5)
+  )
+  {
+    addService(
+      "rendering"
+    );
+  }
+
+  if (
+    serviceBits &
+    (1 << 6)
+  )
+  {
+    addService(
+      "capturing"
+    );
+  }
+
+  if (
+    serviceBits &
+    (1 << 7)
+  )
+  {
+    addService(
+      "object_transfer"
+    );
+  }
+
+  if (
+    serviceBits &
+    (1 << 8)
+  )
+  {
+    addService(
+      "audio"
+    );
+  }
+
+  if (
+    serviceBits &
+    (1 << 9)
+  )
+  {
+    addService(
+      "telephony"
+    );
+  }
+
+  if (
+    serviceBits &
+    (1 << 10)
+  )
+  {
+    addService(
+      "information"
+    );
+  }
+
+
+  json += "]";
+
+  return json;
 }
 
 
@@ -683,15 +1120,57 @@ String buildClassicObject(
       16
     );
 
+  uint8_t formatType =
+    classicFormatType(
+      classValue
+    );
+
+  uint8_t majorCode =
+    classicMajorCode(
+      classValue
+    );
+
+  uint8_t minorCode =
+    classicMinorCode(
+      classValue
+    );
+
+  uint16_t serviceBits =
+    classicServiceBits(
+      classValue
+    );
+
+
+  bool rssiValid =
+    !device.rssiRaw.equalsIgnoreCase(
+      "7FFF"
+    );
+
+  int16_t rssiDbm = 0;
+
+  if (rssiValid)
+  {
+    uint16_t raw =
+      strtoul(
+        device.rssiRaw.c_str(),
+        nullptr,
+        16
+      );
+
+    rssiDbm =
+      (int16_t)raw;
+  }
+
 
   String json;
 
-  json.reserve(250);
+  json.reserve(600);
 
   json += "{";
 
 
-  json += "\"address\":\"";
+  json +=
+    "\"address\":\"";
 
   json +=
     jsonEscape(
@@ -701,10 +1180,13 @@ String buildClassicObject(
   json += "\"";
 
 
-  json += ",\"name\":";
+  json +=
+    ",\"name\":";
 
-  if (device.name.length()) {
-
+  if (
+    device.name.length()
+  )
+  {
     json += "\"";
 
     json +=
@@ -713,11 +1195,29 @@ String buildClassicObject(
       );
 
     json += "\"";
-
-  } else {
-
+  }
+  else
+  {
     json += "null";
   }
+
+
+  json +=
+    ",\"name_lookup_attempted\":";
+
+  json +=
+    device.nameLookupAttempted
+      ? "true"
+      : "false";
+
+
+  json +=
+    ",\"name_lookup_succeeded\":";
+
+  json +=
+    device.nameLookupSucceeded
+      ? "true"
+      : "false";
 
 
   json +=
@@ -739,6 +1239,66 @@ String buildClassicObject(
 
 
   json +=
+    ",\"class_format_type\":";
+
+  json +=
+    String(formatType);
+
+
+  json +=
+    ",\"class_major_code\":";
+
+  json +=
+    String(majorCode);
+
+
+  json +=
+    ",\"class_major\":\"";
+
+  json +=
+    classicMajorName(
+      majorCode
+    );
+
+  json += "\"";
+
+
+  json +=
+    ",\"class_minor_code\":";
+
+  json +=
+    String(minorCode);
+
+
+  json +=
+    ",\"class_minor\":\"";
+
+  json +=
+    classicMinorName(
+      majorCode,
+      minorCode
+    );
+
+  json += "\"";
+
+
+  json +=
+    ",\"service_class_bits\":";
+
+  json +=
+    String(serviceBits);
+
+
+  json +=
+    ",\"services\":";
+
+  json +=
+    classicServiceJSON(
+      serviceBits
+    );
+
+
+  json +=
     ",\"rssi_raw\":\"";
 
   json +=
@@ -749,34 +1309,17 @@ String buildClassicObject(
   json += "\"";
 
 
-  // 7FFF from your modules is retained as raw
-  // rather than pretending it is usable dBm.
-
   json +=
     ",\"rssi_dbm\":";
 
-  if (
-    device.rssiRaw.equalsIgnoreCase(
-      "7FFF"
-    )
-  ) {
-
-    json += "null";
-
-  } else {
-
-    uint16_t raw =
-      strtoul(
-        device.rssiRaw.c_str(),
-        nullptr,
-        16
-      );
-
-    int16_t signedRSSI =
-      (int16_t)raw;
-
+  if (rssiValid)
+  {
     json +=
-      String(signedRSSI);
+      String(rssiDbm);
+  }
+  else
+  {
+    json += "null";
   }
 
 
@@ -801,8 +1344,6 @@ String buildBLEObject(
   json += "{";
 
 
-  // Address
-
   json +=
     "\"address\":\"";
 
@@ -815,8 +1356,6 @@ String buildBLEObject(
   json += "\"";
 
 
-  // Address type
-
   json +=
     ",\"address_type_raw\":";
 
@@ -825,8 +1364,6 @@ String buildBLEObject(
       device.getAddressType()
     );
 
-
-  // RSSI
 
   json +=
     ",\"rssi\":";
@@ -837,76 +1374,75 @@ String buildBLEObject(
     );
 
 
-  // Name
-
   json +=
     ",\"name\":";
 
-  if (device.haveName()) {
-
+  if (
+    device.haveName()
+  )
+  {
     json += "\"";
 
-    json += jsonEscape(
-      String(
-        device
-          .getName()
-          .c_str()
-      )
-    );
+    json +=
+      jsonEscape(
+        String(
+          device
+            .getName()
+            .c_str()
+        )
+      );
 
     json += "\"";
-
-  } else {
-
+  }
+  else
+  {
     json += "null";
   }
 
-
-  // TX power
 
   json +=
     ",\"tx_power\":";
 
-  if (device.haveTXPower()) {
-
+  if (
+    device.haveTXPower()
+  )
+  {
     json +=
       String(
         device.getTXPower()
       );
-
-  } else {
-
+  }
+  else
+  {
     json += "null";
   }
 
-
-  // Appearance
 
   json +=
     ",\"appearance\":";
 
-  if (device.haveAppearance()) {
-
+  if (
+    device.haveAppearance()
+  )
+  {
     json +=
       String(
         device.getAppearance()
       );
-
-  } else {
-
+  }
+  else
+  {
     json += "null";
   }
 
-
-  // Manufacturer-specific advertisement data
 
   json +=
     ",\"manufacturer_data_hex\":";
 
   if (
     device.haveManufacturerData()
-  ) {
-
+  )
+  {
     String data =
       device.getManufacturerData();
 
@@ -918,20 +1454,20 @@ String buildBLEObject(
       );
 
     json += "\"";
-
-  } else {
-
+  }
+  else
+  {
     json += "null";
   }
 
 
-  // Service UUID
-
   json +=
     ",\"service_uuid\":";
 
-  if (device.haveServiceUUID()) {
-
+  if (
+    device.haveServiceUUID()
+  )
+  {
     json += "\"";
 
     json +=
@@ -941,20 +1477,20 @@ String buildBLEObject(
         .c_str();
 
     json += "\"";
-
-  } else {
-
+  }
+  else
+  {
     json += "null";
   }
 
 
-  // Service data
-
   json +=
     ",\"service_data_hex\":";
 
-  if (device.haveServiceData()) {
-
+  if (
+    device.haveServiceData()
+  )
+  {
     String data =
       device.getServiceData();
 
@@ -966,20 +1502,20 @@ String buildBLEObject(
       );
 
     json += "\"";
-
-  } else {
-
+  }
+  else
+  {
     json += "null";
   }
 
 
-  // Service data UUID
-
   json +=
     ",\"service_data_uuid\":";
 
-  if (device.haveServiceData()) {
-
+  if (
+    device.haveServiceData()
+  )
+  {
     json += "\"";
 
     json +=
@@ -989,14 +1525,12 @@ String buildBLEObject(
         .c_str();
 
     json += "\"";
-
-  } else {
-
+  }
+  else
+  {
     json += "null";
   }
 
-
-  // Raw advertisement payload
 
   json +=
     ",\"raw_payload_hex\":";
@@ -1012,19 +1546,20 @@ String buildBLEObject(
   if (
     payload &&
     payloadLength > 0
-  ) {
-
+  )
+  {
     json += "\"";
 
-    json += bytesToHex(
-      payload,
-      payloadLength
-    );
+    json +=
+      bytesToHex(
+        payload,
+        payloadLength
+      );
 
     json += "\"";
-
-  } else {
-
+  }
+  else
+  {
     json += "null";
   }
 
@@ -1044,6 +1579,7 @@ void scanBLE()
   bleCount = 0;
 
   Serial.println();
+
   Serial.println(
     "# ========================================"
   );
@@ -1057,8 +1593,8 @@ void scanBLE()
   );
 
 
-  if (!bleInitialized) {
-
+  if (!bleInitialized)
+  {
     BLEDevice::init("");
 
     bleInitialized = true;
@@ -1068,12 +1604,7 @@ void scanBLE()
   BLEScan *scan =
     BLEDevice::getScan();
 
-
-  // Active scan asks for scan-response packets,
-  // which can expose additional names/data.
-
   scan->setActiveScan(true);
-
   scan->setInterval(100);
   scan->setWindow(99);
 
@@ -1122,13 +1653,15 @@ void scanBLE()
     int i = 0;
     i < numberToStore;
     i++
-  ) {
-
+  )
+  {
     BLEAdvertisedDevice device =
       results->getDevice(i);
 
     bleObservations[bleCount] =
-      buildBLEObject(device);
+      buildBLEObject(
+        device
+      );
 
     bleCount++;
   }
@@ -1155,9 +1688,7 @@ String buildBatchJSON()
 {
   String json;
 
-  // Give it some room up front to reduce fragmentation.
-  json.reserve(12000);
-
+  json.reserve(16000);
 
   json += "{";
 
@@ -1208,10 +1739,6 @@ String buildBatchJSON()
     String(bleCount);
 
 
-  // ------------------------------------------
-  // Classic observations
-  // ------------------------------------------
-
   json +=
     ",\"classic\":[";
 
@@ -1220,9 +1747,10 @@ String buildBatchJSON()
     int i = 0;
     i < classicCount;
     i++
-  ) {
-
-    if (i > 0) {
+  )
+  {
+    if (i > 0)
+    {
       json += ",";
     }
 
@@ -1236,10 +1764,6 @@ String buildBatchJSON()
   json += "]";
 
 
-  // ------------------------------------------
-  // BLE observations
-  // ------------------------------------------
-
   json +=
     ",\"ble\":[";
 
@@ -1248,9 +1772,10 @@ String buildBatchJSON()
     int i = 0;
     i < bleCount;
     i++
-  ) {
-
-    if (i > 0) {
+  )
+  {
+    if (i > 0)
+    {
       json += ",";
     }
 
@@ -1260,7 +1785,6 @@ String buildBatchJSON()
 
 
   json += "]";
-
 
   json += "}";
 
@@ -1276,8 +1800,8 @@ bool postScan(
   const String &payload
 )
 {
-  if (!connectWiFi()) {
-
+  if (!connectWiFi())
+  {
     Serial.println(
       "# Upload skipped."
     );
@@ -1287,6 +1811,7 @@ bool postScan(
 
 
   Serial.println();
+
   Serial.println(
     "# Posting complete scan..."
   );
@@ -1294,12 +1819,13 @@ bool postScan(
 
   HTTPClient http;
 
-
   http.setTimeout(10000);
 
 
-  if (!http.begin(API_URL)) {
-
+  if (
+    !http.begin(API_URL)
+  )
+  {
     Serial.println(
       "# HTTP begin failed."
     );
@@ -1318,7 +1844,9 @@ bool postScan(
 
 
   int responseCode =
-    http.POST(payload);
+    http.POST(
+      payload
+    );
 
 
   Serial.print(
@@ -1330,22 +1858,28 @@ bool postScan(
   );
 
 
-  if (responseCode > 0) {
-
+  if (
+    responseCode > 0
+  )
+  {
     String response =
       http.getString();
 
-    if (response.length()) {
-
+    if (
+      response.length()
+    )
+    {
       Serial.print(
         "# Server response: "
       );
 
-      Serial.println(response);
+      Serial.println(
+        response
+      );
     }
-
-  } else {
-
+  }
+  else
+  {
     Serial.print(
       "# HTTP error: "
     );
@@ -1360,12 +1894,7 @@ bool postScan(
 
   http.end();
 
-
-  // We deliberately don't need Wi-Fi while waiting
-  // or during the next Bluetooth scan.
-
   WiFi.disconnect(true);
-
   WiFi.mode(WIFI_OFF);
 
   Serial.println(
@@ -1394,6 +1923,7 @@ void runScanCycle()
 
   Serial.println();
   Serial.println();
+
   Serial.println(
     "========================================"
   );
@@ -1411,27 +1941,13 @@ void runScanCycle()
   );
 
 
-  // ------------------------------------------
-  // Make sure Wi-Fi is not competing with BLE
-  // ------------------------------------------
-
   WiFi.disconnect(true);
-
   WiFi.mode(WIFI_OFF);
 
   delay(100);
 
 
-  // ------------------------------------------
-  // Bluetooth Classic
-  // ------------------------------------------
-
   scanClassic();
-
-
-  // ------------------------------------------
-  // BLE
-  // ------------------------------------------
 
   scanBLE();
 
@@ -1440,15 +1956,12 @@ void runScanCycle()
     millis();
 
 
-  // ------------------------------------------
-  // Build ONE complete observation package
-  // ------------------------------------------
-
   String payload =
     buildBatchJSON();
 
 
   Serial.println();
+
   Serial.println(
     "# ========================================"
   );
@@ -1461,7 +1974,9 @@ void runScanCycle()
     "# ========================================"
   );
 
-  Serial.println(payload);
+  Serial.println(
+    payload
+  );
 
 
   Serial.print(
@@ -1473,17 +1988,20 @@ void runScanCycle()
   );
 
 
-  // ------------------------------------------
-  // Connect only AFTER radio observation
-  // ------------------------------------------
-
-  postScan(payload);
+  postScan(
+    payload
+  );
 
 
   Serial.println();
+
   Serial.println(
     "# Scan cycle finished."
   );
+
+
+  previousCycleFinished =
+    millis();
 }
 
 
@@ -1499,6 +2017,7 @@ void setup()
 
 
   Serial.println();
+
   Serial.println(
     "ESP32-C3 SOLAR BLUETOOTH OBSERVER"
   );
@@ -1511,10 +2030,6 @@ void setup()
     HC05_TX_PIN
   );
 
-
-  // Useful while we're still commissioning the unit.
-  // Eventually I would remove this because active Wi-Fi
-  // scanning costs battery.
 
   listWiFiNetworks();
 
@@ -1529,22 +2044,14 @@ void setup()
 
 void loop()
 {
-  static uint32_t previousCycleFinished =
-    millis();
-
-
   if (
     millis() -
     previousCycleFinished >=
     SCAN_INTERVAL_MS
-  ) {
-
+  )
+  {
     runScanCycle();
-
-    previousCycleFinished =
-      millis();
   }
-
 
   delay(100);
 }
