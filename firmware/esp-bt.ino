@@ -16,7 +16,7 @@ const char *WIFI_SSID     = "YOUR_WIFI_NETWORK_NAME";
 const char *WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
 
 const char *API_URL =
-  "http://192.168.68.XXX:8000/api/bluetooth/scan";
+  "http://YOUR_SERVER_IP:8000/api/v1/bluetooth/scans";
 
 const char *SCANNER_ID = "solar-bt-01";
 
